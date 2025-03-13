@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import ParameterGrid
-from sklearn.metrics import sharpe_ratio
 import optuna
 import ta
 import warnings
