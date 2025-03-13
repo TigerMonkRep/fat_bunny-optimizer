@@ -21,10 +21,29 @@ class FatBunnyBacktest:
         self.trade_history = []
         self.equity_curve = []
         
+        # Add safety delay tracking
+        self.safety_delay = 0
+        self.reverse_cooldown = 0
+        self.last_trade_type = None
+        self.channel_formed = False
+        self.trade_taken_in_channel = False
+        
     def calculate_channel(self, df, htf_period):
-        """Calculate channel high and low values"""
-        df['channel_high'] = df['high'].rolling(window=htf_period).max()
-        df['channel_low'] = df['low'].rolling(window=htf_period).min()
+        """Calculate channel high and low values using higher timeframe logic"""
+        # Resample to higher timeframe
+        htf_data = df.resample(f'{htf_period}T').agg({
+            'high': 'max',
+            'low': 'min'
+        })
+        
+        # Forward fill the values to match original timeframe
+        df['channel_high'] = htf_data['high'].reindex(df.index).ffill()
+        df['channel_low'] = htf_data['low'].reindex(df.index).ffill()
+        
+        # Shift by 1 period to match TradingView's behavior
+        df['channel_high'] = df['channel_high'].shift(1)
+        df['channel_low'] = df['channel_low'].shift(1)
+        
         return df
     
     def plot_results(self, trades_df):
@@ -117,19 +136,30 @@ class FatBunnyBacktest:
         df = self.calculate_channel(df, htf_period)
         
         # Initialize trading variables
-        balance = self.initial_capital  # Use configurable starting balance
+        balance = self.initial_capital
         position = None
         entry_price = None
         stop_loss = None
         take_profit = None
-        trades = []
-        self.trade_history = []  # Reset trade history
+        self.trade_history = []
         entry_time = None
+        
+        # Reset safety features
+        self.safety_delay = 0
+        self.reverse_cooldown = 0
+        self.channel_formed = False
+        self.trade_taken_in_channel = False
         
         # Iterate through data
         for i in range(htf_period, len(df)):
             current_time = df.index[i]
             current_price = df['close'].iloc[i]
+            
+            # Update safety delays
+            if self.safety_delay > 0:
+                self.safety_delay -= 1
+            if self.reverse_cooldown > 0:
+                self.reverse_cooldown -= 1
             
             # Check for position exit
             if position:
@@ -147,6 +177,9 @@ class FatBunnyBacktest:
                             'balance': balance
                         })
                         position = None
+                        self.safety_delay = 4  # TradingView safety delay
+                        self.last_trade_type = 'long'
+                        
                     elif df['low'].iloc[i] <= stop_loss:
                         pnl = (stop_loss - entry_price) / entry_price * leverage
                         balance *= (1 + pnl * trade_size)
@@ -160,6 +193,8 @@ class FatBunnyBacktest:
                             'balance': balance
                         })
                         position = None
+                        self.safety_delay = 4
+                        self.last_trade_type = 'long'
                         
                 elif position == 'short':
                     if df['low'].iloc[i] <= take_profit:
@@ -175,6 +210,9 @@ class FatBunnyBacktest:
                             'balance': balance
                         })
                         position = None
+                        self.safety_delay = 4
+                        self.last_trade_type = 'short'
+                        
                     elif df['high'].iloc[i] >= stop_loss:
                         pnl = (entry_price - stop_loss) / entry_price * leverage
                         balance *= (1 + pnl * trade_size)
@@ -188,24 +226,32 @@ class FatBunnyBacktest:
                             'balance': balance
                         })
                         position = None
+                        self.safety_delay = 4
+                        self.last_trade_type = 'short'
             
-            # Check for new position entry
-            if not position:
-                # Long entry
-                if current_price > df['channel_high'].iloc[i-1]:
+            # Check for new position entry only if safety delays are cleared
+            if not position and self.safety_delay == 0 and self.reverse_cooldown == 0:
+                # Channel breakout entry conditions
+                if df['close'].iloc[i] > df['channel_high'].iloc[i] and not self.trade_taken_in_channel:
                     position = 'long'
-                    entry_price = current_price
+                    entry_price = df['close'].iloc[i]
                     entry_time = current_time
                     stop_loss = df['low'].iloc[i]
                     take_profit = entry_price + (entry_price - stop_loss) * risk_reward_ratio
-                
-                # Short entry
-                elif current_price < df['channel_low'].iloc[i-1]:
+                    self.trade_taken_in_channel = True
+                    
+                elif df['close'].iloc[i] < df['channel_low'].iloc[i] and not self.trade_taken_in_channel:
                     position = 'short'
-                    entry_price = current_price
+                    entry_price = df['close'].iloc[i]
                     entry_time = current_time
                     stop_loss = df['high'].iloc[i]
                     take_profit = entry_price - (stop_loss - entry_price) * risk_reward_ratio
+                    self.trade_taken_in_channel = True
+            
+            # Reset channel flags on new HTF period
+            if i > 0 and df.index[i].minute % htf_period == 0 and df.index[i-1].minute % htf_period != 0:
+                self.trade_taken_in_channel = False
+                self.channel_formed = True
         
         # Calculate metrics
         if self.trade_history:
