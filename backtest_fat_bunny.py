@@ -204,13 +204,29 @@ class FatBunnyBacktest:
 def load_and_prepare_data(file_path):
     """
     Load and prepare data from CSV file
-    Expected columns: timestamp, open, high, low, close, volume
+    Expected columns: time/timestamp, open, high, low, close, (volume optional)
     """
     df = pd.read_csv(file_path)
     
-    # Ensure datetime format
+    # Rename time column if needed
+    if 'time' in df.columns:
+        df = df.rename(columns={'time': 'timestamp'})
+    
+    # Convert timestamp and set as index
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df.set_index('timestamp', inplace=True)
+    
+    # Add volume column with 0s if it doesn't exist
+    if 'volume' not in df.columns:
+        df['volume'] = 0
+    
+    # Fix any numeric formatting issues
+    numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+    for col in numeric_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    # Drop any rows with NaN values
+    df = df.dropna()
     
     return df
 
