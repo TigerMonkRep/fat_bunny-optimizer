@@ -314,8 +314,8 @@ class FatBunnyBacktest:
             params = {
                 'htf_period': trial.suggest_categorical('htf_period', [2, 3, 5, 10]),  # Specific timeframe choices
                 'risk_reward_ratio': trial.suggest_float('risk_reward_ratio', 0.5, 3.0),
-                'leverage': trial.suggest_int('leverage', 1, 50),
-                'trade_size': trial.suggest_float('trade_size', 1.0, 50.0)
+                'leverage': 1,  # Fixed at 1 (no leverage)
+                'trade_size': trial.suggest_float('trade_size', 1.0, 20.0)  # Limited to 20% max position size
             }
             
             result = self.backtest_strategy(params)
