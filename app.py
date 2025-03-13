@@ -1,102 +1,81 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
 from backtest_fat_bunny import FatBunnyBacktest, load_and_prepare_data
-import io
-import base64
 
-st.set_page_config(page_title="FAT BUNNY Strategy Optimizer", layout="wide")
-
+st.set_page_config(layout="wide")
 st.title("FAT BUNNY Strategy Optimizer")
-st.markdown("""
-This tool helps optimize the parameters of the FAT BUNNY trading strategy using machine learning.
-Upload your TradingView data and find the best parameters for your trading strategy.
-""")
 
 # File uploader
-uploaded_file = st.file_uploader("Upload your TradingView CSV file", type="csv")
+uploaded_file = st.file_uploader("Upload your TradingView CSV file", type=['csv'])
 
 if uploaded_file is not None:
+    # Load data
     try:
-        # Load data
         data = load_and_prepare_data(uploaded_file)
-        
-        # Show data info
-        st.subheader("Data Overview")
+        st.write("Data Overview")
         st.write(f"Date range: {data.index.min()} to {data.index.max()}")
         st.write(f"Number of candles: {len(data)}")
-        
+
         # Optimization settings
-        st.subheader("Optimization Settings")
+        st.header("Optimization Settings")
         col1, col2 = st.columns(2)
-        
         with col1:
-            n_trials = st.number_input("Number of optimization trials", 
-                                     min_value=10, 
-                                     max_value=1000, 
-                                     value=100,
-                                     help="More trials = better results but longer runtime")
-        
-        # Run optimization
+            initial_capital = st.number_input("Initial Capital", min_value=100, value=1000, step=100)
+        with col2:
+            n_trials = st.number_input("Number of optimization trials", min_value=10, value=100, step=10)
+
         if st.button("Start Optimization"):
-            with st.spinner("Running optimization..."):
-                backtester = FatBunnyBacktest(data)
+            # Create backtester instance
+            backtester = FatBunnyBacktest(data, initial_capital=initial_capital)
+            
+            with st.spinner('Running optimization...'):
+                # Run optimization
                 best_result, best_params = backtester.optimize_parameters(n_trials)
                 
                 # Display results
-                st.subheader("Optimization Results")
+                st.header("Optimization Results")
                 
                 # Parameters
-                st.write("Best Parameters:")
+                st.subheader("Best Parameters:")
                 for param, value in best_params.items():
                     st.write(f"- {param}: {value}")
                 
                 # Performance metrics
-                st.write("\nStrategy Performance:")
-                metrics = {
-                    "Total Return": f"{best_result['total_return']:.2f}%",
-                    "Total Trades": best_result['total_trades'],
-                    "Win Rate": f"{best_result['win_rate']:.2f}%",
-                    "Profit Factor": f"{best_result['profit_factor']:.2f}",
-                    "Max Drawdown": f"{best_result['max_drawdown']:.2f}%",
-                    "Sharpe Ratio": f"{best_result['sharpe_ratio']:.2f}"
-                }
-                
-                # Create metrics display
+                st.subheader("Strategy Performance:")
                 col1, col2, col3 = st.columns(3)
-                cols = [col1, col2, col3]
-                for i, (metric, value) in enumerate(metrics.items()):
-                    with cols[i % 3]:
-                        st.metric(metric, value)
+                with col1:
+                    st.metric("Total Return", f"{best_result['total_return']:.2f}%")
+                    st.metric("Total Trades", best_result['total_trades'])
+                with col2:
+                    st.metric("Win Rate", f"{best_result['win_rate']:.2f}%")
+                    st.metric("Profit Factor", f"{best_result['profit_factor']:.2f}")
+                with col3:
+                    st.metric("Max Drawdown", f"{best_result['max_drawdown']:.2f}%")
+                    st.metric("Sharpe Ratio", f"{best_result['sharpe_ratio']:.2f}")
                 
-                # Run backtest with best parameters
-                final_result = backtester.backtest_strategy(best_params)
-                
-                if 'trades' in final_result:
-                    trades_df = pd.DataFrame(final_result['trades'])
+                # Display chart
+                if 'trades_df' in best_result and not best_result['trades_df'].empty:
+                    st.subheader("Trading Chart")
+                    fig = backtester.plot_results(best_result['trades_df'])
+                    st.plotly_chart(fig, use_container_width=True)
                     
-                    # Create equity curve
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=range(len(trades_df)),
-                        y=trades_df['balance'],
-                        mode='lines',
-                        name='Equity Curve'
-                    ))
-                    fig.update_layout(
-                        title="Equity Curve",
-                        xaxis_title="Trade Number",
-                        yaxis_title="Balance",
-                        showlegend=True
+                    # Display trade history
+                    st.subheader("Trade History")
+                    trades_df = best_result['trades_df'].copy()
+                    trades_df = trades_df.reset_index()
+                    trades_df['entry_time'] = trades_df['entry_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                    trades_df['exit_time'] = trades_df['exit_time'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                    trades_df['pnl'] = trades_df['pnl'].round(2)
+                    trades_df['balance'] = trades_df['balance'].round(2)
+                    st.dataframe(trades_df, use_container_width=True)
+                    
+                    # Download trades as CSV
+                    st.download_button(
+                        label="Download Trade History as CSV",
+                        data=trades_df.to_csv(index=False),
+                        file_name="trade_history.csv",
+                        mime="text/csv"
                     )
-                    st.plotly_chart(fig)
-                    
-                    # Download results
-                    csv = trades_df.to_csv(index=False)
-                    b64 = base64.b64encode(csv.encode()).decode()
-                    href = f'<a href="data:file/csv;base64,{b64}" download="backtest_results.csv">Download Detailed Results CSV</a>'
-                    st.markdown(href, unsafe_allow_html=True)
-                    
+
     except Exception as e:
-        st.error(f"Error: {str(e)}")
-        st.write("Please make sure your CSV file has the correct format (timestamp, open, high, low, close, volume)") 
+        st.error(f"Error: {str(e)}") 
