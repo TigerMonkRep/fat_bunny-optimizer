@@ -3,17 +3,23 @@ import numpy as np
 from sklearn.model_selection import ParameterGrid
 import optuna
 import ta
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings('ignore')
 
 class FatBunnyBacktest:
-    def __init__(self, data):
+    def __init__(self, data, initial_capital=1000):
         """
         Initialize backtester with OHLCV data
         data: pandas DataFrame with columns ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        initial_capital: Starting capital for the backtest (default: 1000)
         """
         self.data = data
+        self.initial_capital = initial_capital
         self.results = []
+        self.trade_history = []
+        self.equity_curve = []
         
     def calculate_channel(self, df, htf_period):
         """Calculate channel high and low values"""
@@ -21,6 +27,74 @@ class FatBunnyBacktest:
         df['channel_low'] = df['low'].rolling(window=htf_period).min()
         return df
     
+    def plot_results(self, trades_df):
+        """Plot trading results with price, entry/exit points, and equity curve"""
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                          vertical_spacing=0.03, 
+                          subplot_titles=('Price Action & Trades', 'Equity Curve'),
+                          row_heights=[0.7, 0.3])
+
+        # Price candlesticks
+        fig.add_trace(
+            go.Candlestick(x=self.data.index,
+                          open=self.data['open'],
+                          high=self.data['high'],
+                          low=self.data['low'],
+                          close=self.data['close'],
+                          name='Price'),
+            row=1, col=1
+        )
+
+        # Plot long entries and exits
+        longs = trades_df[trades_df['type'] == 'long']
+        fig.add_trace(
+            go.Scatter(x=longs.index, y=longs['entry'],
+                      mode='markers',
+                      marker=dict(symbol='triangle-up', size=10, color='green'),
+                      name='Long Entry'),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=longs.index, y=longs['exit'],
+                      mode='markers',
+                      marker=dict(symbol='triangle-down', size=10, color='red'),
+                      name='Long Exit'),
+            row=1, col=1
+        )
+
+        # Plot short entries and exits
+        shorts = trades_df[trades_df['type'] == 'short']
+        fig.add_trace(
+            go.Scatter(x=shorts.index, y=shorts['entry'],
+                      mode='markers',
+                      marker=dict(symbol='triangle-down', size=10, color='red'),
+                      name='Short Entry'),
+            row=1, col=1
+        )
+        fig.add_trace(
+            go.Scatter(x=shorts.index, y=shorts['exit'],
+                      mode='markers',
+                      marker=dict(symbol='triangle-up', size=10, color='green'),
+                      name='Short Exit'),
+            row=1, col=1
+        )
+
+        # Equity curve
+        fig.add_trace(
+            go.Scatter(x=trades_df.index, y=trades_df['balance'],
+                      mode='lines',
+                      name='Equity Curve'),
+            row=2, col=1
+        )
+
+        fig.update_layout(
+            title='FAT BUNNY Strategy Backtest Results',
+            xaxis_rangeslider_visible=False,
+            height=800
+        )
+
+        return fig
+
     def backtest_strategy(self, params):
         """
         Backtest the FAT BUNNY strategy with given parameters
@@ -43,15 +117,18 @@ class FatBunnyBacktest:
         df = self.calculate_channel(df, htf_period)
         
         # Initialize trading variables
-        balance = 1000  # Starting balance
+        balance = self.initial_capital  # Use configurable starting balance
         position = None
         entry_price = None
         stop_loss = None
         take_profit = None
         trades = []
+        self.trade_history = []  # Reset trade history
+        entry_time = None
         
         # Iterate through data
         for i in range(htf_period, len(df)):
+            current_time = df.index[i]
             current_price = df['close'].iloc[i]
             
             # Check for position exit
@@ -60,22 +137,26 @@ class FatBunnyBacktest:
                     if df['high'].iloc[i] >= take_profit:
                         pnl = (take_profit - entry_price) / entry_price * leverage
                         balance *= (1 + pnl * trade_size)
-                        trades.append({
+                        self.trade_history.append({
+                            'entry_time': entry_time,
+                            'exit_time': current_time,
                             'type': 'long',
                             'entry': entry_price,
                             'exit': take_profit,
-                            'pnl': pnl,
+                            'pnl': pnl * 100,
                             'balance': balance
                         })
                         position = None
                     elif df['low'].iloc[i] <= stop_loss:
                         pnl = (stop_loss - entry_price) / entry_price * leverage
                         balance *= (1 + pnl * trade_size)
-                        trades.append({
+                        self.trade_history.append({
+                            'entry_time': entry_time,
+                            'exit_time': current_time,
                             'type': 'long',
                             'entry': entry_price,
                             'exit': stop_loss,
-                            'pnl': pnl,
+                            'pnl': pnl * 100,
                             'balance': balance
                         })
                         position = None
@@ -84,22 +165,26 @@ class FatBunnyBacktest:
                     if df['low'].iloc[i] <= take_profit:
                         pnl = (entry_price - take_profit) / entry_price * leverage
                         balance *= (1 + pnl * trade_size)
-                        trades.append({
+                        self.trade_history.append({
+                            'entry_time': entry_time,
+                            'exit_time': current_time,
                             'type': 'short',
                             'entry': entry_price,
                             'exit': take_profit,
-                            'pnl': pnl,
+                            'pnl': pnl * 100,
                             'balance': balance
                         })
                         position = None
                     elif df['high'].iloc[i] >= stop_loss:
                         pnl = (entry_price - stop_loss) / entry_price * leverage
                         balance *= (1 + pnl * trade_size)
-                        trades.append({
+                        self.trade_history.append({
+                            'entry_time': entry_time,
+                            'exit_time': current_time,
                             'type': 'short',
                             'entry': entry_price,
                             'exit': stop_loss,
-                            'pnl': pnl,
+                            'pnl': pnl * 100,
                             'balance': balance
                         })
                         position = None
@@ -110,6 +195,7 @@ class FatBunnyBacktest:
                 if current_price > df['channel_high'].iloc[i-1]:
                     position = 'long'
                     entry_price = current_price
+                    entry_time = current_time
                     stop_loss = df['low'].iloc[i]
                     take_profit = entry_price + (entry_price - stop_loss) * risk_reward_ratio
                 
@@ -117,12 +203,15 @@ class FatBunnyBacktest:
                 elif current_price < df['channel_low'].iloc[i-1]:
                     position = 'short'
                     entry_price = current_price
+                    entry_time = current_time
                     stop_loss = df['high'].iloc[i]
                     take_profit = entry_price - (stop_loss - entry_price) * risk_reward_ratio
         
         # Calculate metrics
-        if trades:
-            trades_df = pd.DataFrame(trades)
+        if self.trade_history:
+            trades_df = pd.DataFrame(self.trade_history)
+            trades_df.set_index('entry_time', inplace=True)
+            
             total_trades = len(trades_df)
             winning_trades = len(trades_df[trades_df['pnl'] > 0])
             win_rate = winning_trades / total_trades
@@ -130,17 +219,18 @@ class FatBunnyBacktest:
             avg_loss = trades_df[trades_df['pnl'] < 0]['pnl'].mean() if len(trades_df[trades_df['pnl'] < 0]) > 0 else 0
             profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else float('inf')
             max_drawdown = self.calculate_max_drawdown(trades_df['balance'])
-            sharpe = self.calculate_sharpe_ratio(trades_df['pnl'])
+            sharpe = self.calculate_sharpe_ratio(trades_df['pnl'] / 100)
             
             return {
                 'final_balance': balance,
-                'total_return': ((balance - 1000) / 1000) * 100,
+                'total_return': ((balance - self.initial_capital) / self.initial_capital) * 100,
                 'total_trades': total_trades,
                 'win_rate': win_rate * 100,
                 'profit_factor': profit_factor,
                 'max_drawdown': max_drawdown,
                 'sharpe_ratio': sharpe,
-                'params': params
+                'params': params,
+                'trades_df': trades_df
             }
         
         return {
@@ -151,7 +241,8 @@ class FatBunnyBacktest:
             'profit_factor': 0,
             'max_drawdown': 0,
             'sharpe_ratio': 0,
-            'params': params
+            'params': params,
+            'trades_df': pd.DataFrame()
         }
     
     @staticmethod
@@ -175,7 +266,7 @@ class FatBunnyBacktest:
         """
         def objective(trial):
             params = {
-                'htf_period': trial.suggest_int('htf_period', 4, 48),
+                'htf_period': trial.suggest_categorical('htf_period', [2, 3, 5, 10]),  # Specific timeframe choices
                 'risk_reward_ratio': trial.suggest_float('risk_reward_ratio', 0.5, 3.0),
                 'leverage': trial.suggest_int('leverage', 1, 50),
                 'trade_size': trial.suggest_float('trade_size', 1.0, 50.0)
@@ -244,6 +335,7 @@ if __name__ == "__main__":
     
     # Get input from user
     file_path = input("Enter the path to your CSV file with OHLCV data: ")
+    initial_capital = float(input("Enter starting capital (default 1000): ") or 1000)
     n_trials = int(input("Enter number of optimization trials (default 100): ") or 100)
     
     try:
@@ -252,8 +344,8 @@ if __name__ == "__main__":
         print(f"\nLoaded data from {file_path}")
         print(f"Date range: {data.index.min()} to {data.index.max()}")
         
-        # Create backtester instance
-        backtester = FatBunnyBacktest(data)
+        # Create backtester instance with specified initial capital
+        backtester = FatBunnyBacktest(data, initial_capital=initial_capital)
         
         # Run optimization
         print(f"\nRunning optimization with {n_trials} trials...")
@@ -273,6 +365,15 @@ if __name__ == "__main__":
         print(f"- Profit Factor: {best_result['profit_factor']:.2f}")
         print(f"- Max Drawdown: {best_result['max_drawdown']:.2f}%")
         print(f"- Sharpe Ratio: {best_result['sharpe_ratio']:.2f}")
+        
+        # Display trade history
+        if 'trades_df' in best_result and not best_result['trades_df'].empty:
+            print("\nTrade History:")
+            print(best_result['trades_df'].to_string())
+            
+            # Create and show the plot
+            fig = backtester.plot_results(best_result['trades_df'])
+            fig.show()
         
     except Exception as e:
         print(f"\nError: {str(e)}") 
