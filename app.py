@@ -1,9 +1,16 @@
 import streamlit as st
 import pandas as pd
-from backtest_fat_bunny import Backtester, FatBunnyStrategy, load_and_prepare_data
+from backtest_fat_bunny import Backtester, AVAILABLE_STRATEGIES, load_and_prepare_data
 
 st.set_page_config(layout="wide")
-st.title("FAT BUNNY Strategy Optimizer")
+st.title("Trading Strategy Optimizer")
+
+# Strategy selector
+strategy_name = st.selectbox(
+    "Select Strategy",
+    options=list(AVAILABLE_STRATEGIES.keys()),
+    format_func=lambda x: x.replace('_', ' ').title()
+)
 
 # File uploader
 uploaded_file = st.file_uploader("Upload your TradingView CSV file", type=['csv'])
@@ -26,10 +33,10 @@ if uploaded_file is not None:
 
         if st.button("Start Optimization"):
             # Create strategy and backtester instances
-            strategy = FatBunnyStrategy()
+            strategy = AVAILABLE_STRATEGIES[strategy_name]()
             backtester = Backtester(data, strategy, initial_capital=initial_capital)
             
-            with st.spinner('Running optimization...'):
+            with st.spinner(f'Running optimization for {strategy_name.replace("_", " ").title()} strategy...'):
                 # Run optimization
                 best_result, best_params = backtester.optimize_parameters(n_trials)
                 
@@ -74,7 +81,7 @@ if uploaded_file is not None:
                     st.download_button(
                         label="Download Trade History as CSV",
                         data=trades_df.to_csv(index=False),
-                        file_name="trade_history.csv",
+                        file_name=f"{strategy_name}_trades.csv",
                         mime="text/csv"
                     )
 
