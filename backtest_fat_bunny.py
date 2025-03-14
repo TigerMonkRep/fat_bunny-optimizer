@@ -603,14 +603,24 @@ def load_and_prepare_data(file_path):
     """
     Load and prepare data from TradingView CSV export
     Handles both Unix milliseconds and ISO format timestamps with timezone offsets
-    Expected columns: time,open,high,low,close,Volume
+    Expected columns: time, open, high, low, close (additional columns will be ignored)
     """
     try:
         # Read CSV with specific TradingView format
         print("\nDebug: Reading CSV file...")
         df = pd.read_csv(file_path)
         print(f"Debug: Initial columns: {df.columns.tolist()}")
-        print(f"Debug: First few rows of time column:\n{df['time'].head()}")
+        
+        # Select only the columns we need
+        required_columns = ['time', 'open', 'high', 'low', 'close']
+        for col in required_columns:
+            if col not in df.columns:
+                raise ValueError(f"Missing required column: {col}")
+        
+        # Keep only the columns we need
+        df = df[required_columns]
+        print("\nDebug: Selected only required columns")
+        print(f"Debug: Working with columns: {df.columns.tolist()}")
         
         # Try to parse timestamp - handle both Unix ms and ISO format
         print("\nDebug: Attempting to parse timestamps...")
@@ -622,36 +632,19 @@ def load_and_prepare_data(file_path):
             print(f"Debug: Unix milliseconds failed with error: {str(e1)}")
             try:
                 # If that fails, try ISO format with timezone handling
-                print("Debug: Trying ISO format...")
-                df['timestamp'] = pd.to_datetime(df['time'], format='%Y-%m-%dT%H:%M:%S%z', utc=True)
+                print("Debug: Trying ISO format with timezone...")
+                df['timestamp'] = pd.to_datetime(df['time'])
             except (ValueError, TypeError) as e2:
-                print(f"Debug: Standard ISO format failed, trying with explicit timezone parsing...")
-                try:
-                    # Try parsing with explicit timezone handling
-                    df['timestamp'] = pd.to_datetime(df['time'].str.replace('T', ' '))
-                except (ValueError, TypeError) as e3:
-                    print(f"Debug: All timestamp parsing attempts failed.")
-                    raise ValueError(f"Could not parse timestamp column. Please check the format.")
+                print(f"Debug: All timestamp parsing attempts failed.")
+                raise ValueError(f"Could not parse timestamp column. Please check the format.")
         
         print(f"\nDebug: Timestamp conversion successful. First few timestamps:\n{df['timestamp'].head()}")
         
         df = df.drop('time', axis=1)
         df.set_index('timestamp', inplace=True)
         
-        # Ensure all required columns exist and are properly formatted
-        required_columns = ['open', 'high', 'low', 'close']
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
-        
-        print(f"\nDebug: Checking columns after setting index: {df.columns.tolist()}")
-        
-        # Convert volume column if it exists, otherwise create it
-        if 'Volume' in df.columns:
-            df['volume'] = df['Volume']
-            df = df.drop('Volume', axis=1)
-        elif 'volume' not in df.columns:
-            df['volume'] = 0
+        # Add volume column with zeros since it's not in the export
+        df['volume'] = 0
             
         # Ensure numeric columns are properly formatted
         numeric_columns = ['open', 'high', 'low', 'close', 'volume']
@@ -671,7 +664,7 @@ def load_and_prepare_data(file_path):
     except Exception as e:
         print(f"\nDebug: Fatal error in data loading: {str(e)}")
         print(f"Debug: Error type: {type(e)}")
-        raise Exception(f"Error loading data: {str(e)}. Please ensure your TradingView CSV export has the correct format.")
+        raise Exception(f"Error loading data: {str(e)}. Please ensure your TradingView CSV export has the required columns.")
 
 # Dictionary of available strategies
 AVAILABLE_STRATEGIES = {
