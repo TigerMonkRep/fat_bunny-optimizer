@@ -6,30 +6,38 @@ import ta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
+from abc import ABC, abstractmethod
 warnings.filterwarnings('ignore')
 
-class FatBunnyBacktest:
-    def __init__(self, data, initial_capital=1000):
-        """
-        Initialize backtester with OHLCV data
-        data: pandas DataFrame with columns ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-        initial_capital: Starting capital for the backtest (default: 1000)
-        """
-        self.data = data
-        self.initial_capital = initial_capital
-        self.results = []
-        self.trade_history = []
-        self.equity_curve = []
-        
-        # Add safety delay tracking
+class Strategy(ABC):
+    """Base Strategy class that all indicators must inherit from"""
+    
+    @abstractmethod
+    def calculate_indicators(self, df, params):
+        """Calculate the indicator values"""
+        pass
+    
+    @abstractmethod
+    def check_entry_signals(self, df, i, params):
+        """Check for entry signals"""
+        pass
+    
+    @abstractmethod
+    def get_optimization_params(self, trial):
+        """Define the parameters to optimize"""
+        pass
+
+class FatBunnyStrategy(Strategy):
+    def __init__(self):
         self.safety_delay = 0
         self.reverse_cooldown = 0
         self.last_trade_type = None
         self.channel_formed = False
         self.trade_taken_in_channel = False
         
-    def calculate_channel(self, df, htf_period):
+    def calculate_indicators(self, df, params):
         """Calculate channel high and low values using higher timeframe logic"""
+        htf_period = params['htf_period']
         # Resample to higher timeframe
         htf_data = df.resample(f'{htf_period}T').agg({
             'high': 'max',
@@ -46,6 +54,331 @@ class FatBunnyBacktest:
         
         return df
     
+    def check_entry_signals(self, df, i, params):
+        """Check for entry signals based on channel breakouts"""
+        if df['close'].iloc[i] > df['channel_high'].iloc[i] and not self.trade_taken_in_channel:
+            self.trade_taken_in_channel = True
+            return 'long', df['low'].iloc[i]
+        elif df['close'].iloc[i] < df['channel_low'].iloc[i] and not self.trade_taken_in_channel:
+            self.trade_taken_in_channel = True
+            return 'short', df['high'].iloc[i]
+        return None, None
+    
+    def get_optimization_params(self, trial):
+        """Define Fat Bunny optimization parameters"""
+        return {
+            'htf_period': trial.suggest_categorical('htf_period', [2, 3, 5, 10]),
+            'risk_reward_ratio': trial.suggest_float('risk_reward_ratio', 0.5, 3.0),
+            'leverage': 1,
+            'trade_size': trial.suggest_float('trade_size', 1.0, 20.0)
+        }
+
+class RSIStrategy(Strategy):
+    def calculate_indicators(self, df, params):
+        """Calculate RSI indicator"""
+        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=params['rsi_period']).rsi()
+        return df
+    
+    def check_entry_signals(self, df, i, params):
+        """Check for entry signals based on RSI"""
+        if df['rsi'].iloc[i] < params['oversold_threshold']:
+            return 'long', df['low'].iloc[i]
+        elif df['rsi'].iloc[i] > params['overbought_threshold']:
+            return 'short', df['high'].iloc[i]
+        return None, None
+    
+    def get_optimization_params(self, trial):
+        """Define RSI optimization parameters"""
+        return {
+            'rsi_period': trial.suggest_int('rsi_period', 7, 21),
+            'oversold_threshold': trial.suggest_int('oversold_threshold', 20, 40),
+            'overbought_threshold': trial.suggest_int('overbought_threshold', 60, 80),
+            'risk_reward_ratio': trial.suggest_float('risk_reward_ratio', 0.5, 3.0),
+            'leverage': 1,
+            'trade_size': trial.suggest_float('trade_size', 1.0, 20.0)
+        }
+
+class LittlePonyStrategy(Strategy):
+    def __init__(self):
+        self.last_pivot_type = None
+        self.bull_gap_active = False
+        self.bear_gap_active = False
+        self.bull_gap_lower = None
+        self.bull_gap_upper = None
+        self.bear_gap_lower = None
+        self.bear_gap_upper = None
+        self.valid_bull_retracement = False
+        self.valid_bear_retracement = False
+        self.last_pivot_high = None
+        self.last_pivot_low = None
+        self.last_pivot_high_idx = None
+        self.last_pivot_low_idx = None
+        
+    def calculate_zigzag(self, df, lb, rb):
+        """Calculate ZigZag pivots exactly as in Pine Script"""
+        df['pivot_high'] = None
+        df['pivot_low'] = None
+        df['hh'] = False
+        df['hl'] = False
+        df['lh'] = False
+        df['ll'] = False
+        
+        window = lb + rb + 1
+        
+        for i in range(window, len(df) - window):
+            # Check left side
+            left_higher = all(df['high'].iloc[i] > df['high'].iloc[i-lb:i])
+            left_lower = all(df['low'].iloc[i] < df['low'].iloc[i-lb:i])
+            
+            # Check right side
+            right_higher = all(df['high'].iloc[i] > df['high'].iloc[i+1:i+rb+1])
+            right_lower = all(df['low'].iloc[i] < df['low'].iloc[i+1:i+rb+1])
+            
+            # Identify pivot points
+            if left_higher and right_higher:
+                df.at[df.index[i], 'pivot_high'] = df['high'].iloc[i]
+                
+                # Classify as HH or LH
+                if self.last_pivot_high is not None:
+                    if df['high'].iloc[i] > self.last_pivot_high:
+                        df.at[df.index[i], 'hh'] = True
+                    else:
+                        df.at[df.index[i], 'lh'] = True
+                self.last_pivot_high = df['high'].iloc[i]
+                self.last_pivot_high_idx = i
+                
+            if left_lower and right_lower:
+                df.at[df.index[i], 'pivot_low'] = df['low'].iloc[i]
+                
+                # Classify as LL or HL
+                if self.last_pivot_low is not None:
+                    if df['low'].iloc[i] < self.last_pivot_low:
+                        df.at[df.index[i], 'll'] = True
+                    else:
+                        df.at[df.index[i], 'hl'] = True
+                self.last_pivot_low = df['low'].iloc[i]
+                self.last_pivot_low_idx = i
+        
+        return df
+    
+    def detect_fvg(self, df, threshold_percent):
+        """Detect Fair Value Gaps exactly as in Pine Script"""
+        df['bull_fvg'] = False
+        df['bear_fvg'] = False
+        df['bull_fvg_lower'] = None
+        df['bull_fvg_upper'] = None
+        df['bear_fvg_lower'] = None
+        df['bear_fvg_upper'] = None
+        
+        for i in range(2, len(df)):
+            # Bullish FVG
+            if df['low'].iloc[i] > df['high'].iloc[i-2]:
+                gap_size = (df['low'].iloc[i] - df['high'].iloc[i-2]) / df['high'].iloc[i-2] * 100
+                if gap_size >= threshold_percent:
+                    df.at[df.index[i], 'bull_fvg'] = True
+                    df.at[df.index[i], 'bull_fvg_lower'] = df['high'].iloc[i-2]
+                    df.at[df.index[i], 'bull_fvg_upper'] = df['low'].iloc[i]
+                    self.bull_gap_active = True
+                    self.bull_gap_lower = df['high'].iloc[i-2]
+                    self.bull_gap_upper = df['low'].iloc[i]
+            
+            # Bearish FVG
+            if df['high'].iloc[i] < df['low'].iloc[i-2]:
+                gap_size = (df['low'].iloc[i-2] - df['high'].iloc[i]) / df['high'].iloc[i] * 100
+                if gap_size >= threshold_percent:
+                    df.at[df.index[i], 'bear_fvg'] = True
+                    df.at[df.index[i], 'bear_fvg_lower'] = df['high'].iloc[i]
+                    df.at[df.index[i], 'bear_fvg_upper'] = df['low'].iloc[i-2]
+                    self.bear_gap_active = True
+                    self.bear_gap_lower = df['high'].iloc[i]
+                    self.bear_gap_upper = df['low'].iloc[i-2]
+            
+            # Reset FVG states if gaps are filled
+            if self.bull_gap_active:
+                if df['low'].iloc[i] <= self.bull_gap_lower:
+                    self.bull_gap_active = False
+                    self.valid_bull_retracement = False
+            
+            if self.bear_gap_active:
+                if df['high'].iloc[i] >= self.bear_gap_upper:
+                    self.bear_gap_active = False
+                    self.valid_bear_retracement = False
+        
+        return df
+    
+    def calculate_indicators(self, df, params):
+        """Calculate all necessary indicators"""
+        # Calculate ZigZag patterns
+        df = self.calculate_zigzag(df, params['left_bars'], params['right_bars'])
+        
+        # Detect FVGs
+        df = self.detect_fvg(df, params['fvg_threshold'])
+        
+        return df
+    
+    def check_entry_signals(self, df, i, params):
+        """Check for entry signals exactly as in Pine Script"""
+        if i < 2:  # Need at least 3 bars of data
+            return None, None, None
+            
+        # Check for FVG retracements
+        if self.bull_gap_active:
+            # Check if price retraces into the gap
+            if df['low'].iloc[i] <= self.bull_gap_upper and df['high'].iloc[i] >= self.bull_gap_lower:
+                # Validate retracement
+                if df['close'].iloc[i] > df['open'].iloc[i]:  # Bullish candle
+                    entry_price = df['close'].iloc[i]
+                    tp_price, sl_price = self.calculate_tp_sl(df, i, 'long', entry_price, params)
+                    if tp_price is not None and sl_price is not None:
+                        return 'long', sl_price, tp_price
+            
+        if self.bear_gap_active:
+            # Check if price retraces into the gap
+            if df['high'].iloc[i] >= self.bear_gap_lower and df['low'].iloc[i] <= self.bear_gap_upper:
+                # Validate retracement
+                if df['close'].iloc[i] < df['open'].iloc[i]:  # Bearish candle
+                    entry_price = df['close'].iloc[i]
+                    tp_price, sl_price = self.calculate_tp_sl(df, i, 'short', entry_price, params)
+                    if tp_price is not None and sl_price is not None:
+                        return 'short', sl_price, tp_price
+        
+        return None, None, None
+    
+    def get_optimization_params(self, trial):
+        """Define Little Pony optimization parameters"""
+        # Core strategy parameters
+        params = {
+            'left_bars': trial.suggest_int('left_bars', 3, 10),
+            'right_bars': trial.suggest_int('right_bars', 3, 10),
+            'fvg_threshold': trial.suggest_float('fvg_threshold', 0.0, 1.0),
+            'leverage': 1,
+            'trade_size': trial.suggest_float('trade_size', 1.0, 20.0),
+            
+            # Toggle different TP/SL methods
+            'use_rr_tp': trial.suggest_categorical('use_rr_tp', [True, False]),
+            'use_tp_adjustment': trial.suggest_categorical('use_tp_adjustment', [True, False]),
+            'use_pivot_sl': trial.suggest_categorical('use_pivot_sl', [True, False]),
+            'use_candle_pivot_sl': trial.suggest_categorical('use_candle_pivot_sl', [True, False]),
+            
+            # TP parameters
+            'min_tp_distance': trial.suggest_float('min_tp_distance', 0.2, 2.0),
+            'tp_adjust_percent': trial.suggest_float('tp_adjust_percent', -1.0, 1.0),
+            
+            # SL parameters
+            'min_sl_distance': trial.suggest_float('min_sl_distance', 0.2, 2.0),
+            'sl_adjust_percent': trial.suggest_float('sl_adjust_percent', -1.0, 1.0),
+            
+            # Risk-Reward parameters
+            'risk_reward_ratio': trial.suggest_float('risk_reward_ratio', 0.5, 3.0),
+            
+            # Pivot point parameters
+            'pivot_lookback': trial.suggest_int('pivot_lookback', 5, 20),
+            'candle_pivot_lookback': trial.suggest_int('candle_pivot_lookback', 5, 20)
+        }
+        
+        # Ensure at least one SL method is active
+        if not params['use_pivot_sl'] and not params['use_candle_pivot_sl']:
+            params['use_pivot_sl'] = True  # Default to pivot SL if neither is selected
+            
+        return params
+
+    def find_pivot_sl(self, df, i, position_type, params):
+        """Find stop loss level using pivot points"""
+        if position_type == 'long':
+            # Look for recent LL/HL patterns for long SL
+            for j in range(max(0, i-params['pivot_lookback']), i):
+                if df['ll'].iloc[j] or df['hl'].iloc[j]:
+                    return df['low'].iloc[j] * (1 - params['sl_adjust_percent']/100)
+        else:  # short
+            # Look for recent HH/LH patterns for short SL
+            for j in range(max(0, i-params['pivot_lookback']), i):
+                if df['hh'].iloc[j] or df['lh'].iloc[j]:
+                    return df['high'].iloc[j] * (1 + params['sl_adjust_percent']/100)
+        return None
+
+    def find_candle_pivot_sl(self, df, i, position_type, params):
+        """Find stop loss level using candle pivot points"""
+        lookback = params['candle_pivot_lookback']
+        if position_type == 'long':
+            lowest_low = df['low'].iloc[max(0, i-lookback):i].min()
+            return lowest_low * (1 - params['sl_adjust_percent']/100)
+        else:  # short
+            highest_high = df['high'].iloc[max(0, i-lookback):i].max()
+            return highest_high * (1 + params['sl_adjust_percent']/100)
+    
+    def calculate_tp_sl(self, df, i, position_type, entry_price, params):
+        """Calculate take profit and stop loss levels exactly as in Pine Script"""
+        tp_price = None
+        sl_price = None
+        
+        # Calculate base TP using risk-reward if enabled
+        if params['use_rr_tp']:
+            if position_type == 'long':
+                sl_distance = entry_price - params['min_sl_distance']
+                tp_distance = entry_price * params['risk_reward_ratio'] * (entry_price - sl_distance) / entry_price
+                tp_price = entry_price + tp_distance
+            else:  # short
+                sl_distance = entry_price + params['min_sl_distance']
+                tp_distance = entry_price * params['risk_reward_ratio'] * (sl_distance - entry_price) / entry_price
+                tp_price = entry_price - tp_distance
+        
+        # Adjust TP by percentage if enabled
+        if params['use_tp_adjustment'] and tp_price is not None:
+            tp_price *= (1 + params['tp_adjust_percent']/100)
+        
+        # Calculate SL based on selected method
+        if params['use_pivot_sl']:
+            pivot_sl = self.find_pivot_sl(df, i, position_type, params)
+            if pivot_sl is not None:
+                sl_price = pivot_sl
+        
+        if params['use_candle_pivot_sl'] and sl_price is None:
+            candle_pivot_sl = self.find_candle_pivot_sl(df, i, position_type, params)
+            if candle_pivot_sl is not None:
+                sl_price = candle_pivot_sl
+        
+        # Validate minimum distances
+        if position_type == 'long':
+            min_tp_price = entry_price * (1 + params['min_tp_distance']/100)
+            max_sl_price = entry_price * (1 - params['min_sl_distance']/100)
+            
+            if tp_price is None or tp_price < min_tp_price:
+                tp_price = min_tp_price
+            if sl_price is None or sl_price > max_sl_price:
+                sl_price = max_sl_price
+                
+        else:  # short
+            min_tp_price = entry_price * (1 - params['min_tp_distance']/100)
+            max_sl_price = entry_price * (1 + params['min_sl_distance']/100)
+            
+            if tp_price is None or tp_price > min_tp_price:
+                tp_price = min_tp_price
+            if sl_price is None or sl_price < max_sl_price:
+                sl_price = max_sl_price
+        
+        # Apply final adjustments
+        if params['use_tp_adjustment']:
+            tp_price *= (1 + params['tp_adjust_percent']/100)
+        if sl_price is not None:
+            sl_price *= (1 + params['sl_adjust_percent']/100)
+        
+        return tp_price, sl_price
+
+class Backtester:
+    def __init__(self, data, strategy, initial_capital=1000):
+        """
+        Initialize backtester with OHLCV data and strategy
+        data: pandas DataFrame with columns ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+        strategy: Instance of a Strategy class
+        initial_capital: Starting capital for the backtest (default: 1000)
+        """
+        self.data = data
+        self.strategy = strategy
+        self.initial_capital = initial_capital
+        self.results = []
+        self.trade_history = []
+        self.equity_curve = []
+        
     def plot_results(self, trades_df):
         """Plot trading results with price, entry/exit points, and equity curve"""
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
@@ -107,7 +440,7 @@ class FatBunnyBacktest:
         )
 
         fig.update_layout(
-            title='FAT BUNNY Strategy Backtest Results',
+            title='Strategy Backtest Results',
             xaxis_rangeslider_visible=False,
             height=800
         )
@@ -116,24 +449,12 @@ class FatBunnyBacktest:
 
     def backtest_strategy(self, params):
         """
-        Backtest the FAT BUNNY strategy with given parameters
-        
-        params: dict with keys:
-        - htf_period: Higher timeframe period for channel calculation
-        - risk_reward_ratio: Risk to reward ratio
-        - leverage: Trading leverage
-        - trade_size: Percentage of balance to risk per trade
+        Backtest the strategy with given parameters
         """
         df = self.data.copy()
         
-        # Initialize parameters
-        htf_period = params['htf_period']
-        risk_reward_ratio = params['risk_reward_ratio']
-        leverage = params['leverage']
-        trade_size = params['trade_size'] / 100
-        
-        # Calculate channels
-        df = self.calculate_channel(df, htf_period)
+        # Calculate indicators based on strategy
+        df = self.strategy.calculate_indicators(df, params)
         
         # Initialize trading variables
         balance = self.initial_capital
@@ -144,22 +465,14 @@ class FatBunnyBacktest:
         self.trade_history = []
         entry_time = None
         
-        # Reset safety features
-        self.safety_delay = 0
-        self.reverse_cooldown = 0
-        self.channel_formed = False
-        self.trade_taken_in_channel = False
+        risk_reward_ratio = params['risk_reward_ratio']
+        leverage = params['leverage']
+        trade_size = params['trade_size'] / 100
         
         # Iterate through data
-        for i in range(htf_period, len(df)):
+        for i in range(1, len(df)):
             current_time = df.index[i]
             current_price = df['close'].iloc[i]
-            
-            # Update safety delays
-            if self.safety_delay > 0:
-                self.safety_delay -= 1
-            if self.reverse_cooldown > 0:
-                self.reverse_cooldown -= 1
             
             # Check for position exit
             if position:
@@ -177,8 +490,6 @@ class FatBunnyBacktest:
                             'balance': balance
                         })
                         position = None
-                        self.safety_delay = 4  # TradingView safety delay
-                        self.last_trade_type = 'long'
                         
                     elif df['low'].iloc[i] <= stop_loss:
                         pnl = (stop_loss - entry_price) / entry_price * leverage
@@ -193,8 +504,6 @@ class FatBunnyBacktest:
                             'balance': balance
                         })
                         position = None
-                        self.safety_delay = 4
-                        self.last_trade_type = 'long'
                         
                 elif position == 'short':
                     if df['low'].iloc[i] <= take_profit:
@@ -210,8 +519,6 @@ class FatBunnyBacktest:
                             'balance': balance
                         })
                         position = None
-                        self.safety_delay = 4
-                        self.last_trade_type = 'short'
                         
                     elif df['high'].iloc[i] >= stop_loss:
                         pnl = (entry_price - stop_loss) / entry_price * leverage
@@ -226,32 +533,16 @@ class FatBunnyBacktest:
                             'balance': balance
                         })
                         position = None
-                        self.safety_delay = 4
-                        self.last_trade_type = 'short'
             
-            # Check for new position entry only if safety delays are cleared
-            if not position and self.safety_delay == 0 and self.reverse_cooldown == 0:
-                # Channel breakout entry conditions
-                if df['close'].iloc[i] > df['channel_high'].iloc[i] and not self.trade_taken_in_channel:
-                    position = 'long'
+            # Check for new position entry
+            if not position:
+                position_type, sl_price, tp_price = self.strategy.check_entry_signals(df, i, params)
+                if position_type:
+                    position = position_type
                     entry_price = df['close'].iloc[i]
                     entry_time = current_time
-                    stop_loss = df['low'].iloc[i]
-                    take_profit = entry_price + (entry_price - stop_loss) * risk_reward_ratio
-                    self.trade_taken_in_channel = True
-                    
-                elif df['close'].iloc[i] < df['channel_low'].iloc[i] and not self.trade_taken_in_channel:
-                    position = 'short'
-                    entry_price = df['close'].iloc[i]
-                    entry_time = current_time
-                    stop_loss = df['high'].iloc[i]
-                    take_profit = entry_price - (stop_loss - entry_price) * risk_reward_ratio
-                    self.trade_taken_in_channel = True
-            
-            # Reset channel flags on new HTF period
-            if i > 0 and df.index[i].minute % htf_period == 0 and df.index[i-1].minute % htf_period != 0:
-                self.trade_taken_in_channel = False
-                self.channel_formed = True
+                    stop_loss = sl_price
+                    take_profit = tp_price
         
         # Calculate metrics
         if self.trade_history:
@@ -260,7 +551,7 @@ class FatBunnyBacktest:
             
             total_trades = len(trades_df)
             winning_trades = len(trades_df[trades_df['pnl'] > 0])
-            win_rate = winning_trades / total_trades
+            win_rate = winning_trades / total_trades if total_trades > 0 else 0
             avg_win = trades_df[trades_df['pnl'] > 0]['pnl'].mean() if winning_trades > 0 else 0
             avg_loss = trades_df[trades_df['pnl'] < 0]['pnl'].mean() if len(trades_df[trades_df['pnl'] < 0]) > 0 else 0
             profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else float('inf')
@@ -311,12 +602,7 @@ class FatBunnyBacktest:
         Optimize strategy parameters using Optuna
         """
         def objective(trial):
-            params = {
-                'htf_period': trial.suggest_categorical('htf_period', [2, 3, 5, 10]),  # Specific timeframe choices
-                'risk_reward_ratio': trial.suggest_float('risk_reward_ratio', 0.5, 3.0),
-                'leverage': 1,  # Fixed at 1 (no leverage)
-                'trade_size': trial.suggest_float('trade_size', 1.0, 20.0)  # Limited to 20% max position size
-            }
+            params = self.strategy.get_optimization_params(trial)
             
             result = self.backtest_strategy(params)
             
@@ -374,12 +660,29 @@ def load_and_prepare_data(file_path):
     except Exception as e:
         raise Exception(f"Error loading data: {str(e)}. Please ensure your CSV file has the columns: time, open, high, low, close")
 
+# Dictionary of available strategies
+AVAILABLE_STRATEGIES = {
+    'fat_bunny': FatBunnyStrategy,
+    'rsi': RSIStrategy,
+    'little_pony': LittlePonyStrategy
+}
+
 if __name__ == "__main__":
     # Example usage
-    print("FAT BUNNY Strategy Optimizer")
-    print("----------------------------")
+    print("Strategy Optimizer")
+    print("----------------")
+    
+    # Print available strategies
+    print("\nAvailable Strategies:")
+    for key in AVAILABLE_STRATEGIES.keys():
+        print(f"- {key}")
     
     # Get input from user
+    strategy_name = input("\nEnter strategy name: ").lower()
+    if strategy_name not in AVAILABLE_STRATEGIES:
+        print(f"Error: Strategy '{strategy_name}' not found")
+        exit(1)
+        
     file_path = input("Enter the path to your CSV file with OHLCV data: ")
     initial_capital = float(input("Enter starting capital (default 1000): ") or 1000)
     n_trials = int(input("Enter number of optimization trials (default 100): ") or 100)
@@ -390,8 +693,11 @@ if __name__ == "__main__":
         print(f"\nLoaded data from {file_path}")
         print(f"Date range: {data.index.min()} to {data.index.max()}")
         
-        # Create backtester instance with specified initial capital
-        backtester = FatBunnyBacktest(data, initial_capital=initial_capital)
+        # Create strategy instance
+        strategy = AVAILABLE_STRATEGIES[strategy_name]()
+        
+        # Create backtester instance
+        backtester = Backtester(data, strategy, initial_capital=initial_capital)
         
         # Run optimization
         print(f"\nRunning optimization with {n_trials} trials...")
