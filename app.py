@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from backtest_fat_bunny import FatBunnyBacktest, load_and_prepare_data
+from backtest_fat_bunny import Backtester, FatBunnyStrategy, load_and_prepare_data
 
 st.set_page_config(layout="wide")
 st.title("FAT BUNNY Strategy Optimizer")
@@ -25,8 +25,9 @@ if uploaded_file is not None:
             n_trials = st.number_input("Number of optimization trials", min_value=10, value=100, step=10)
 
         if st.button("Start Optimization"):
-            # Create backtester instance
-            backtester = FatBunnyBacktest(data, initial_capital=initial_capital)
+            # Create strategy and backtester instances
+            strategy = FatBunnyStrategy()
+            backtester = Backtester(data, strategy, initial_capital=initial_capital)
             
             with st.spinner('Running optimization...'):
                 # Run optimization
