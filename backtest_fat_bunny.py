@@ -601,39 +601,44 @@ class Backtester:
 
 def load_and_prepare_data(file_path):
     """
-    Load and prepare data from CSV file
-    Expected TradingView columns: time, open, high, low, close
+    Load and prepare data from TradingView CSV export
+    Expected columns: time,open,high,low,close,Volume
     """
     try:
+        # Read CSV with specific TradingView format
         df = pd.read_csv(file_path)
         
-        # Verify required columns exist
-        required_columns = ['time', 'open', 'high', 'low', 'close']
+        # TradingView exports use 'time' column in Unix milliseconds
+        df['timestamp'] = pd.to_datetime(df['time'], unit='ms')
+        df = df.drop('time', axis=1)
+        df.set_index('timestamp', inplace=True)
+        
+        # Ensure all required columns exist and are properly formatted
+        required_columns = ['open', 'high', 'low', 'close']
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
         
-        # Convert timestamp and set as index
-        df['timestamp'] = pd.to_datetime(df['time'])
-        df = df.drop('time', axis=1)
-        df.set_index('timestamp', inplace=True)
-        
-        # Add volume column with 0s if it doesn't exist
-        if 'volume' not in df.columns:
+        # Convert volume column if it exists, otherwise create it
+        if 'Volume' in df.columns:
+            df['volume'] = df['Volume']
+            df = df.drop('Volume', axis=1)
+        elif 'volume' not in df.columns:
             df['volume'] = 0
-        
-        # Fix any numeric formatting issues
+            
+        # Ensure numeric columns are properly formatted
         numeric_columns = ['open', 'high', 'low', 'close', 'volume']
         for col in numeric_columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Drop any rows with NaN values
+        # Sort by timestamp and drop any NaN values
+        df = df.sort_index()
         df = df.dropna()
         
         return df
         
     except Exception as e:
-        raise Exception(f"Error loading data: {str(e)}. Please ensure your CSV file has the columns: time, open, high, low, close")
+        raise Exception(f"Error loading data: {str(e)}. Please ensure your TradingView CSV export has the correct format.")
 
 # Dictionary of available strategies
 AVAILABLE_STRATEGIES = {
