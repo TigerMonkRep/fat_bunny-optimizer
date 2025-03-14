@@ -602,14 +602,39 @@ class Backtester:
 def load_and_prepare_data(file_path):
     """
     Load and prepare data from TradingView CSV export
+    Handles both Unix milliseconds and ISO format timestamps with timezone offsets
     Expected columns: time,open,high,low,close,Volume
     """
     try:
         # Read CSV with specific TradingView format
+        print("\nDebug: Reading CSV file...")
         df = pd.read_csv(file_path)
+        print(f"Debug: Initial columns: {df.columns.tolist()}")
+        print(f"Debug: First few rows of time column:\n{df['time'].head()}")
         
-        # TradingView exports use 'time' column in Unix milliseconds
-        df['timestamp'] = pd.to_datetime(df['time'], unit='ms')
+        # Try to parse timestamp - handle both Unix ms and ISO format
+        print("\nDebug: Attempting to parse timestamps...")
+        try:
+            # First try Unix milliseconds
+            print("Debug: Trying Unix milliseconds format...")
+            df['timestamp'] = pd.to_datetime(df['time'], unit='ms')
+        except (ValueError, TypeError) as e1:
+            print(f"Debug: Unix milliseconds failed with error: {str(e1)}")
+            try:
+                # If that fails, try ISO format with timezone handling
+                print("Debug: Trying ISO format...")
+                df['timestamp'] = pd.to_datetime(df['time'], format='%Y-%m-%dT%H:%M:%S%z', utc=True)
+            except (ValueError, TypeError) as e2:
+                print(f"Debug: Standard ISO format failed, trying with explicit timezone parsing...")
+                try:
+                    # Try parsing with explicit timezone handling
+                    df['timestamp'] = pd.to_datetime(df['time'].str.replace('T', ' '))
+                except (ValueError, TypeError) as e3:
+                    print(f"Debug: All timestamp parsing attempts failed.")
+                    raise ValueError(f"Could not parse timestamp column. Please check the format.")
+        
+        print(f"\nDebug: Timestamp conversion successful. First few timestamps:\n{df['timestamp'].head()}")
+        
         df = df.drop('time', axis=1)
         df.set_index('timestamp', inplace=True)
         
@@ -618,6 +643,8 @@ def load_and_prepare_data(file_path):
         missing_columns = [col for col in required_columns if col not in df.columns]
         if missing_columns:
             raise ValueError(f"Missing required columns: {', '.join(missing_columns)}")
+        
+        print(f"\nDebug: Checking columns after setting index: {df.columns.tolist()}")
         
         # Convert volume column if it exists, otherwise create it
         if 'Volume' in df.columns:
@@ -631,13 +658,19 @@ def load_and_prepare_data(file_path):
         for col in numeric_columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
+        print(f"\nDebug: Shape before sorting and dropping NaN: {df.shape}")
         # Sort by timestamp and drop any NaN values
         df = df.sort_index()
         df = df.dropna()
+        print(f"Debug: Shape after sorting and dropping NaN: {df.shape}")
+        print(f"Debug: Final columns: {df.columns.tolist()}")
+        print(f"Debug: First few rows of final dataframe:\n{df.head()}")
         
         return df
         
     except Exception as e:
+        print(f"\nDebug: Fatal error in data loading: {str(e)}")
+        print(f"Debug: Error type: {type(e)}")
         raise Exception(f"Error loading data: {str(e)}. Please ensure your TradingView CSV export has the correct format.")
 
 # Dictionary of available strategies
