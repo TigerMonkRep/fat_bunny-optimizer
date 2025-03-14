@@ -73,31 +73,6 @@ class FatBunnyStrategy(Strategy):
             'trade_size': trial.suggest_float('trade_size', 1.0, 20.0)
         }
 
-class RSIStrategy(Strategy):
-    def calculate_indicators(self, df, params):
-        """Calculate RSI indicator"""
-        df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=params['rsi_period']).rsi()
-        return df
-    
-    def check_entry_signals(self, df, i, params):
-        """Check for entry signals based on RSI"""
-        if df['rsi'].iloc[i] < params['oversold_threshold']:
-            return 'long', df['low'].iloc[i]
-        elif df['rsi'].iloc[i] > params['overbought_threshold']:
-            return 'short', df['high'].iloc[i]
-        return None, None
-    
-    def get_optimization_params(self, trial):
-        """Define RSI optimization parameters"""
-        return {
-            'rsi_period': trial.suggest_int('rsi_period', 7, 21),
-            'oversold_threshold': trial.suggest_int('oversold_threshold', 20, 40),
-            'overbought_threshold': trial.suggest_int('overbought_threshold', 60, 80),
-            'risk_reward_ratio': trial.suggest_float('risk_reward_ratio', 0.5, 3.0),
-            'leverage': 1,
-            'trade_size': trial.suggest_float('trade_size', 1.0, 20.0)
-        }
-
 class LittlePonyStrategy(Strategy):
     def __init__(self):
         self.last_pivot_type = None
@@ -663,7 +638,6 @@ def load_and_prepare_data(file_path):
 # Dictionary of available strategies
 AVAILABLE_STRATEGIES = {
     'fat_bunny': FatBunnyStrategy,
-    'rsi': RSIStrategy,
     'little_pony': LittlePonyStrategy
 }
 
